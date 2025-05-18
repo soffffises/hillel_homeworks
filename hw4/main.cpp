@@ -4,7 +4,8 @@
 #include <vector>
 #include <string>
 #include <memory>
-
+#include <functional>
+#include <unordered_map>
 
 class INumberReader {
 public:
@@ -24,7 +25,6 @@ public:
     virtual void on_finished() = 0;
     virtual ~INumberObserver() = default;
 };
-
 
 class FileNumberReader : public INumberReader {
 public:
@@ -67,33 +67,9 @@ public:
 class GreaterThanFilter : public INumberFilter {
     int threshold;
 public:
-    GreaterThanFilter(int n) : threshold(n) {}
+    explicit GreaterThanFilter(int n) : threshold(n) {}
     bool keep(int number) override {
         return number > threshold;
-    }
-};
-
-class FilterFactory {
-public:
-    static std::unique_ptr<INumberFilter> create(const std::string& filterStr) {
-        if (filterStr == "EVEN") {
-            return std::make_unique<EvenFilter>();
-        } else if (filterStr == "ODD") {
-            return std::make_unique<OddFilter>();
-        } else if (filterStr.rfind("GT", 0) == 0) {
-            try {
-                std::string value = filterStr.substr(2);
-                if (value.empty()) throw std::invalid_argument("empty");
-                int n = std::stoi(value);
-                return std::make_unique<GreaterThanFilter>(n);
-            } catch (...) {
-                std::cerr << " Invalid GT format. Use GT<n>, e.g. GT5\n";
-                return nullptr;
-            }
-        } else {
-            std::cerr << " Unknown filter: " << filterStr << "\n";
-            return nullptr;
-        }
     }
 };
 
@@ -118,6 +94,45 @@ public:
         if (count == 0) {
             std::cout << " No numbers passed the filter.\n";
         }
+    }
+};
+
+class FilterFactory {
+    using FactoryFunc = std::function<std::unique_ptr<INumberFilter>()>;
+
+    static std::unordered_map<std::string, FactoryFunc>& registry() {
+        static std::unordered_map<std::string, FactoryFunc> instance;
+        return instance;
+    }
+
+public:
+    static void register_filter(const std::string& name, FactoryFunc func) {
+        registry()[name] = std::move(func);
+    }
+
+    static std::unique_ptr<INumberFilter> create(const std::string& filterStr) {
+        if (filterStr.rfind("GT", 0) == 0 && filterStr.size() > 2) {
+            try {
+                int n = std::stoi(filterStr.substr(2));
+                return std::make_unique<GreaterThanFilter>(n);
+            } catch (...) {
+                std::cerr << " Invalid GT format. Use GT<n>, e.g. GT5\n";
+                return nullptr;
+            }
+        }
+
+        auto it = registry().find(filterStr);
+        if (it != registry().end()) {
+            return (it->second)();
+        }
+
+        std::cerr << " Unknown filter: " << filterStr << "\n";
+        return nullptr;
+    }
+
+    static void register_default_filters() {
+        register_filter("EVEN", []() { return std::make_unique<EvenFilter>(); });
+        register_filter("ODD", []() { return std::make_unique<OddFilter>(); });
     }
 };
 
@@ -151,19 +166,20 @@ public:
     }
 };
 
-
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        std::cerr << " Usage: <FileName> <FILTER> <Text FILENAME>\n";
-        std::cerr << " Available filters:\n";
-        std::cerr << " EVEN - even numbers only\n";
-        std::cerr << " ODD - odd numbers only\n";
-        std::cerr << " GT<n> - numbers greater than n (e.g., GT5)\n";
+        std::cerr << "Usage: <FileName> <FILTER> <Text FILENAME>\n";
+        std::cerr << "Available filters:\n";
+        std::cerr << "  EVEN      - even numbers only\n";
+        std::cerr << "  ODD       - odd numbers only\n";
+        std::cerr << "  GT<n>     - numbers greater than n (e.g., GT5)\n";
         return 1;
     }
 
     std::string filterArg = argv[1];
     std::string filename = argv[2];
+
+    FilterFactory::register_default_filters();
 
     auto filter = FilterFactory::create(filterArg);
     if (!filter) return 1;
