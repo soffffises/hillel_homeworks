@@ -2,83 +2,73 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
-#include <string>
 #include <memory>
+#include <map>
 #include <functional>
-#include <unordered_map>
+#include <string>
+#include <algorithm>
+#include <cctype>
 
-class INumberReader {
-public:
-    virtual std::vector<int> read(const std::string& filename) = 0;
+
+struct INumberReader {
     virtual ~INumberReader() = default;
+    virtual std::vector<int> read_numbers(const std::string& filename) = 0;
 };
 
-class INumberFilter {
-public:
-    virtual bool keep(int number) = 0;
+struct INumberFilter {
     virtual ~INumberFilter() = default;
+    virtual bool keep(int n) = 0;
 };
 
-class INumberObserver {
-public:
-    virtual void on_number(int number) = 0;
-    virtual void on_finished() = 0;
+struct INumberObserver {
     virtual ~INumberObserver() = default;
+    virtual void on_number(int n) = 0;
+    virtual void on_finished() = 0;
 };
+
 
 class FileNumberReader : public INumberReader {
 public:
-    std::vector<int> read(const std::string& filename) override {
+    std::vector<int> read_numbers(const std::string& filename) override {
         std::ifstream file(filename);
         std::vector<int> numbers;
-
         if (!file.is_open()) {
-            std::cerr << " Error: could not open file \"" << filename << "\"\n";
-            return {};
+            std::cerr << "Failed to open file: " << filename << std::endl;
+            return numbers;
         }
 
-        int num;
-        while (file >> num) {
-            numbers.push_back(num);
+        int number;
+        while (file >> number) {
+            numbers.push_back(number);
         }
-
-        if (numbers.empty()) {
-            std::cerr << " Warning: file contains no valid integers.\n";
-        }
-
         return numbers;
     }
 };
 
+
 class EvenFilter : public INumberFilter {
 public:
-    bool keep(int number) override {
-        return number % 2 == 0;
-    }
+    bool keep(int n) override { return n % 2 == 0; }
 };
 
 class OddFilter : public INumberFilter {
 public:
-    bool keep(int number) override {
-        return number % 2 != 0;
-    }
+    bool keep(int n) override { return n % 2 != 0; }
 };
 
 class GreaterThanFilter : public INumberFilter {
     int threshold;
 public:
-    explicit GreaterThanFilter(int n) : threshold(n) {}
-    bool keep(int number) override {
-        return number > threshold;
-    }
+    GreaterThanFilter(int t) : threshold(t) {}
+    bool keep(int n) override { return n > threshold; }
 };
+
 
 class PrintObserver : public INumberObserver {
 public:
-    void on_number(int number) override {
-        std::cout << number << "\n";
+    void on_number(int n) override {
+        std::cout << "Number: " << n << std::endl;
     }
-
     void on_finished() override {}
 };
 
@@ -86,55 +76,69 @@ class CountObserver : public INumberObserver {
     int count = 0;
 public:
     void on_number(int) override {
-        ++count;
+        count++;
     }
-
     void on_finished() override {
-        std::cout << " Total numbers passed the filter: " << count << "\n";
-        if (count == 0) {
-            std::cout << " No numbers passed the filter.\n";
-        }
+        std::cout << "Total numbers passed filter: " << count << std::endl;
     }
 };
 
-class FilterFactory {
-    using FactoryFunc = std::function<std::unique_ptr<INumberFilter>()>;
 
-    static std::unordered_map<std::string, FactoryFunc>& registry() {
-        static std::unordered_map<std::string, FactoryFunc> instance;
-        return instance;
+class FilterFactory {
+    using FilterCreator = std::function<std::unique_ptr<INumberFilter>(const std::string&)>;
+    std::map<std::string, FilterCreator> registry;
+
+    FilterFactory() {
+        register_filter("EVEN", [](const std::string&) {
+            return std::make_unique<EvenFilter>();
+        });
+
+        register_filter("ODD", [](const std::string&) {
+            return std::make_unique<OddFilter>();
+        });
+
+        register_filter("GT", [](const std::string& param) {
+            if (param.empty()) {
+                throw std::invalid_argument("Missing parameter for GT filter");
+            }
+            try {
+                int val = std::stoi(param);
+                return std::make_unique<GreaterThanFilter>(val);
+            } catch (...) {
+                throw std::invalid_argument("Invalid parameter for GT filter: " + param);
+            }
+        });
+    }
+
+    void register_filter(const std::string& name, FilterCreator creator) {
+        registry[name] = creator;
     }
 
 public:
-    static void register_filter(const std::string& name, FactoryFunc func) {
-        registry()[name] = std::move(func);
+    static FilterFactory& instance() {
+        static FilterFactory instance;
+        return instance;
     }
 
-    static std::unique_ptr<INumberFilter> create(const std::string& filterStr) {
-        if (filterStr.rfind("GT", 0) == 0 && filterStr.size() > 2) {
-            try {
-                int n = std::stoi(filterStr.substr(2));
-                return std::make_unique<GreaterThanFilter>(n);
-            } catch (...) {
-                std::cerr << " Invalid GT format. Use GT<n>, e.g. GT5\n";
-                return nullptr;
-            }
+    std::unique_ptr<INumberFilter> create(const std::string& filter_expr) {
+        std::string key;
+        std::string param;
+
+        size_t i = 0;
+        while (i < filter_expr.size() && std::isalpha(static_cast<unsigned char>(filter_expr[i]))) {
+            key += filter_expr[i++];
+        }
+        param = filter_expr.substr(i);
+
+        auto it = registry.find(key);
+        if (it != registry.end()) {
+            return it->second(param);
         }
 
-        auto it = registry().find(filterStr);
-        if (it != registry().end()) {
-            return (it->second)();
-        }
-
-        std::cerr << " Unknown filter: " << filterStr << "\n";
-        return nullptr;
-    }
-
-    static void register_default_filters() {
-        register_filter("EVEN", []() { return std::make_unique<EvenFilter>(); });
-        register_filter("ODD", []() { return std::make_unique<OddFilter>(); });
+        throw std::invalid_argument("Unknown filter: " + key);
     }
 };
+
 
 class NumberProcessor {
     INumberReader& reader;
@@ -146,51 +150,48 @@ public:
         : reader(r), filter(f), observers(obs) {}
 
     void run(const std::string& filename) {
-        auto numbers = reader.read(filename);
-        if (numbers.empty()) {
-            std::cerr << " Terminating: no numbers to process.\n";
-            return;
-        }
-
-        for (int num : numbers) {
-            if (filter.keep(num)) {
+        auto numbers = reader.read_numbers(filename);
+        for (int n : numbers) {
+            if (filter.keep(n)) {
                 for (auto obs : observers) {
-                    obs->on_number(num);
+                    obs->on_number(n);
                 }
             }
         }
-
         for (auto obs : observers) {
             obs->on_finished();
         }
     }
 };
 
+
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        std::cerr << "Usage: <FileName> <FILTER> <Text FILENAME>\n";
-        std::cerr << "Available filters:\n";
-        std::cerr << "  EVEN      - even numbers only\n";
-        std::cerr << "  ODD       - odd numbers only\n";
-        std::cerr << "  GT<n>     - numbers greater than n (e.g., GT5)\n";
+        std::cerr << "Usage: " << argv[0] << " <FILTER> <FILENAME>\n";
+        std::cerr << "FILTER options: EVEN, ODD, GT<n> (e.g., GT5)\n";
         return 1;
     }
 
-    std::string filterArg = argv[1];
+    std::string filter_expr = argv[1];
     std::string filename = argv[2];
 
-    FilterFactory::register_default_filters();
+    try {
+        auto& factory = FilterFactory::instance();
+        auto filter = factory.create(filter_expr);
 
-    auto filter = FilterFactory::create(filterArg);
-    if (!filter) return 1;
+        FileNumberReader reader;
+        PrintObserver printObs;
+        CountObserver countObs;
 
-    FileNumberReader reader;
-    PrintObserver printer;
-    CountObserver counter;
-    std::vector<INumberObserver*> observers = { &printer, &counter };
+        std::vector<INumberObserver*> observers = { &printObs, &countObs };
 
-    NumberProcessor processor(reader, *filter, observers);
-    processor.run(filename);
+        NumberProcessor processor(reader, *filter, observers);
+        processor.run(filename);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 2;
+    }
 
     return 0;
 }
